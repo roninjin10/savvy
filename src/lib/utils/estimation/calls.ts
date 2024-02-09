@@ -1,4 +1,5 @@
-import { Abi, CallError, CallResult, createMemoryClient, encodeFunctionData, Tevm } from 'tevm';
+import { Abi, createMemoryClient, encodeFunctionData, TevmClient } from 'tevm';
+import { CallError } from 'tevm/errors';
 import { ContractFunctionArgs } from 'viem';
 
 import { AirdropMethod, Token } from '@/lib/types/airdrop';
@@ -40,11 +41,10 @@ export const callToLocalChain: CallToLocalChain = async (
   args,
   hasCustomStack,
 ) => {
-  const tevm: Tevm = await createMemoryClient({
-    fork: {
-      url: `${forkUrl}${alchemyId}`,
-    },
-  });
+  const tevm: TevmClient = await createMemoryClient(
+    { fork: { url: `${forkUrl}/${alchemyId}` } }
+  );
+  const nonForkedTevm = await createMemoryClient({});
 
   const caller = `0x${'01'.repeat(20)}` as const;
   const params = [abi, functionName, args] as const;
@@ -53,20 +53,39 @@ export const callToLocalChain: CallToLocalChain = async (
     id === 'push-native'
       ? airdropEthParams(...params)
       : id === 'push-ERC20'
-      ? airdropEthParams(...params)
-      : { value: BigInt(0), encodedData: '0x' as `0x${string}` };
+        ? airdropEthParams(...params)
+        : { value: BigInt(0), encodedData: '0x' as `0x${string}` };
 
   if (encodedData === '0x') {
     return returnEmptyCallDataWithError('Failed to encode call data');
   }
 
-  const callResult: CallResult = await tevm.call({
+  const deployedBytecode = await tevm.eth.getCode({ address: contractAddress })
+
+  await nonForkedTevm.setAccount({
+    address: contractAddress,
+    balance: BigInt(0),
+    deployedBytecode,
+  })
+
+  // test it in the nonforked case
+  const nonForkedCallResult = await nonForkedTevm.call({
     caller,
     to: contractAddress,
     value,
     data: encodedData,
     skipBalance: true,
   });
+  // test it in the forked case
+  const callResult = await tevm.call({
+    caller,
+    to: contractAddress,
+    value,
+    data: encodedData,
+    skipBalance: true,
+  });
+  console.log('nonForkedCallResult', nonForkedCallResult)
+  console.log('callResult', callResult)
 
   const l1submission = { deployment: '0', call: '0' };
   if (hasCustomStack) {
